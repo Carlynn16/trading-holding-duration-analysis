@@ -54,20 +54,27 @@ The analysis is built in three layers, from descriptive to inferential to predic
 
 ## Key findings
 
-<!-- TO COMPLETE as the analysis runs -->
-- The probability of a losing trade rises monotonically with holding duration
-  (≈ XX% for very short trades up to ≈ XX% beyond one day).
-- Median profit turns negative around the **X–X day** holding range.
-- Survival analysis: median time-to-loss is **XX**; hazard of loss is **X.X×** higher for
-  [instrument/side] (Cox hazard ratios).
-- Predictive model: best AUC **0.XX** using entry-time features — useful for ranking risk,
-  with limits discussed in the report.
+- Loss probability rises monotonically with holding duration — **~16%** for sub-hour
+  trades, **~46%** for trades held beyond one day; conditional loss probability reaches
+  **~55%** for multi-day holds.
+- Median profit turns negative in the **5–7 day** holding range (median −0.99 at 5–7 days,
+  −1.94 beyond 7 days).
+- Survival analysis: cumulative loss incidence crosses **25%** between ~12–24h; conditional
+  loss probability crosses **50%** at ~5.7 days (137h). Cox proportional-hazards: **XAUUSD
+  (gold) carries the highest loss hazard** at HR ≈ 3.0× the baseline; AUD-cross pairs show
+  the lowest (HR 0.62–0.79).
+- Predictive modeling: best entry-only ROC-AUC **0.586** — real but modest signal; adding
+  holding duration (post-close, not available live) would raise AUC to **0.725** — a gap
+  the survival-based exit rule captures that no entry classifier can.
 
 ## Recommendation
 
-<!-- TO COMPLETE -->
-> Close positions after approximately **XX hours/days**, with instrument-specific
-> adjustments and stop-loss rules detailed in the report.
+> **Review zone (~13 hours):** flag any open position held past 13 hours for active
+> review — conditional loss probability crosses 30% with no evidence of compensating upside.
+>
+> **Hard limit (5 days / 120 hours):** force-close all open positions; loss probability is
+> ~48% at 120h and reaches 50%+ by ~5.7 days, and median profit has already turned negative.
+> Apply a tighter ~9-hour trigger for XAUUSD (gold), which carries a 3× loss hazard.
 
 ## Repository structure
 
