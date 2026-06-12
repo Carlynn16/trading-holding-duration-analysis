@@ -1,0 +1,25 @@
+# Project brief — contains client context, not for public repo
+CONTEXT.md
+
+# Data — never commit client data
+data/
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Generated figures
+figures/*.png
+!figures/.gitkeep
+
+# Raw data formats
+*.csv
+*.parquet
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Virtual environments
+venv/
+.venv/

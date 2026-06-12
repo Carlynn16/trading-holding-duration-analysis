@@ -1,0 +1,15 @@
+pandas
+numpy
+scipy
+statsmodels
+scikit-learn
+xgboost
+lightgbm
+lifelines
+shap
+matplotlib
+seaborn
+python-docx
+pyarrow
+scikit-posthocs
+pytest
