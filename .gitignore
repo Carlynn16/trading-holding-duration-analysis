@@ -6,9 +6,8 @@ data/
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 
-# Generated figures
-figures/*.png
-!figures/.gitkeep
+# figures/ — PNGs are tracked so they are browsable on GitHub
+# (only the .gitkeep placeholder was tracked before; now all PNGs are included)
 
 # Raw data formats
 *.csv
