@@ -76,34 +76,88 @@ def _fmt_hours(h) -> str:
 
 
 def _df_to_word_table(doc, df: pd.DataFrame, fmt: dict | None = None):
-    """Render a pandas DataFrame as a native Word table."""
+    """Render a DataFrame as a styled Word table.
+
+    Table Grid borders; bold header with a 1.5 pt bottom rule; numeric/fmt
+    columns right-aligned; text columns left-aligned; Calibri 9 pt throughout.
+    """
     fmt = fmt or {}
+    # Columns that should be right-aligned (numeric or explicitly formatted)
+    numeric_cols = {c for c in df.columns
+                    if pd.api.types.is_numeric_dtype(df[c]) or c in fmt}
+
     table = doc.add_table(rows=1, cols=len(df.columns))
-    table.style = "Light Shading Accent 1"
+    table.style = "Table Grid"
+
+    # ---- XML helpers ----
+    def _apply_borders(cell, bottom_sz: int = 4):
+        """Single thin borders on all sides; heavier bottom for header."""
+        tc      = cell._tc
+        tcPr    = tc.get_or_add_tcPr()
+        borders = OxmlElement("w:tcBorders")
+        for side in ("top", "left", "right"):
+            el = OxmlElement(f"w:{side}")
+            el.set(qn("w:val"),   "single")
+            el.set(qn("w:sz"),    "4")           # 0.5 pt
+            el.set(qn("w:color"), "B0B0B0")
+            borders.append(el)
+        bot = OxmlElement("w:bottom")
+        bot.set(qn("w:val"),   "single")
+        bot.set(qn("w:sz"),    str(bottom_sz))   # 4 = 0.5 pt; 12 = 1.5 pt for header
+        bot.set(qn("w:color"), "000000" if bottom_sz >= 12 else "B0B0B0")
+        borders.append(bot)
+        tcPr.append(borders)
+
+    def _apply_padding(cell, top=60, bottom=60, left=120, right=120):
+        tc      = cell._tc
+        tcPr    = tc.get_or_add_tcPr()
+        margins = OxmlElement("w:tcMar")
+        for side, val in [("top", top), ("bottom", bottom),
+                           ("left", left), ("right", right)]:
+            el = OxmlElement(f"w:{side}")
+            el.set(qn("w:w"),    str(val))
+            el.set(qn("w:type"), "dxa")
+            margins.append(el)
+        tcPr.append(margins)
+
+    def _write_cell(cell, text: str, bold: bool = False,
+                    right: bool = False, bottom_sz: int = 4):
+        cell.text = text
+        para = cell.paragraphs[0]
+        run  = para.runs[0] if para.runs else para.add_run(text)
+        run.font.bold  = bold
+        run.font.size  = Pt(9)
+        run.font.name  = "Calibri"
+        if right:
+            para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        _apply_padding(cell)
+        _apply_borders(cell, bottom_sz=bottom_sz)
 
     # Header row
-    hdr_cells = table.rows[0].cells
     for i, col in enumerate(df.columns):
-        hdr_cells[i].text = str(col)
-        run = hdr_cells[i].paragraphs[0].runs[0]
-        run.font.bold = True
-        run.font.size = Pt(9)
+        _write_cell(table.rows[0].cells[i], str(col),
+                    bold=True, right=(col in numeric_cols), bottom_sz=12)
 
     # Data rows
     for _, row in df.iterrows():
         cells = table.add_row().cells
         for i, col in enumerate(df.columns):
             val = row[col]
-            if col in fmt:
+            try:
+                is_nan = bool(pd.isna(val))
+            except (TypeError, ValueError):
+                is_nan = False
+            if is_nan:
+                text = "—"
+            elif col in fmt:
                 text = fmt[col].format(val)
             elif isinstance(val, float):
                 text = f"{val:.4f}" if abs(val) < 1000 else f"{val:,.1f}"
             else:
                 text = str(val)
-            cells[i].text = text
-            cells[i].paragraphs[0].runs[0].font.size = Pt(9)
+            _write_cell(cells[i], text, right=(col in numeric_cols))
 
-    doc.add_paragraph()  # spacing after table
+    doc.add_paragraph()
 
 
 # ---------------------------------------------------------------------------
@@ -399,10 +453,11 @@ def add_section2_descriptive(doc: Document) -> None:
     _heading(doc, "2.5  Profit distributions by bin (boxplots)", level=2)
     _add_figure(doc, "fig_profit_box_hours.png",
         "Figure 6. Boxplot of profit per hour bin (5th–95th percentile of profit, "
-        "outliers suppressed for readability)."
+        "outliers suppressed; y-axis zoomed to the IQR/whisker region for readability)."
     )
     _add_figure(doc, "fig_profit_box_days.png",
-        "Figure 7. Boxplot of profit per day bin (5th–95th percentile of profit)."
+        "Figure 7. Boxplot of profit per day bin (5th–95th percentile of profit, "
+        "outliers suppressed; y-axis zoomed to the IQR/whisker region for readability)."
     )
     _body(doc,
         "The boxplots show that while median profit remains positive across most bins, "
@@ -426,6 +481,52 @@ def add_section2_descriptive(doc: Document) -> None:
         "importance of using median profit — rather than mean — as the primary profitability "
         "benchmark, and of employing non-parametric tests."
     )
+
+    # ---- 2.6 Seasonality & time-of-day effects ----
+    _heading(doc, "2.6  Seasonality and time-of-day effects", level=2)
+
+    _body(doc,
+        "Loss probability is essentially flat across calendar months, ranging from "
+        "approximately 26% to 29%, and similarly flat across entry hours of the day, "
+        "ranging from approximately 24% to 30% — both distributions remain within a "
+        "few percentage points of the 27.8% overall base rate. "
+        "Entry timing is therefore not a meaningful loss lever, consistent with the "
+        "negligible effect sizes reported in Section 2.4, and month and hour cyclical "
+        "features rank in the SHAP top 12 (Section 4.5) only because the overall "
+        "entry-time model is weak (best AUC 0.586, Section 4.2). "
+        "The actionable lever for loss reduction remains holding duration, not entry timing."
+    )
+
+    _heading(doc, "Monthly Sharpe proxy (risk-adjusted return by month)", level=3)
+    _add_figure(doc, "fig_monthly_sharpe.png",
+        "Figure 9. Monthly Sharpe proxy: mean(Profit) / std(Profit) per calendar month, "
+        "computed on raw per-trade profit values (not annualised). Green bars indicate "
+        "positive signal-to-noise; red bars indicate negative. This figure is exploratory "
+        "and confounded with the sample’s market regime — it should not be used for "
+        "month-selection without further out-of-sample validation."
+    )
+    sharpe_csv = PROCESSED / "monthly_sharpe.csv"
+    if sharpe_csv.exists():
+        sharpe_df = pd.read_csv(sharpe_csv)
+        month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        sharpe_df["Month"] = sharpe_df["month"].apply(lambda m: month_names[m - 1])
+        sharpe_df["Sharpe proxy"] = sharpe_df["sharpe_proxy"].round(3)
+        sharpe_df["Trade count"] = sharpe_df["n_trades"].apply(lambda x: f"{x:,}")
+        _df_to_word_table(
+            doc,
+            sharpe_df[["Month", "Sharpe proxy", "Trade count"]].reset_index(drop=True),
+            fmt={"Sharpe proxy": "{:.3f}"},
+        )
+        valid = sharpe_df.dropna(subset=["sharpe_proxy"])
+        if len(valid) > 0:
+            best_sm  = valid.loc[valid["sharpe_proxy"].idxmax(), "Month"]
+            worst_sm = valid.loc[valid["sharpe_proxy"].idxmin(), "Month"]
+            _body(doc,
+                f"The highest Sharpe proxy is in {best_sm}; the lowest in {worst_sm}. "
+                "This variation is included for completeness but is confounded with "
+                "sample-period market regime effects."
+            )
 
     doc.add_page_break()
 
@@ -511,7 +612,7 @@ def add_section3_survival(doc: Document) -> None:
         "is that cause-specific censoring slightly overestimates the cumulative incidence "
         "relative to a proper competing-risks model — because it implicitly assumes that "
         "profitable-close trades would eventually turn into losses if observed long enough. "
-        "The Aalen-Johansen competing-risks check in Section 3.6 quantifies this inflation."
+        "The Aalen-Johansen competing-risks check in Section 3.8 quantifies this inflation."
     )
 
     # ---- 3.3 KM cumulative incidence ----
@@ -525,7 +626,7 @@ def add_section3_survival(doc: Document) -> None:
     _df_to_word_table(doc, inc_df, fmt=fmt_inc)
 
     _add_figure(doc, "fig_km_overall.png",
-        "Figure 9. Kaplan-Meier cumulative loss incidence (1 - S(t)) up to 168h with 95% CI. "
+        "Figure 10. Kaplan-Meier cumulative loss incidence (1 - S(t)) up to 168h with 95% CI. "
         "The dashed lines mark the 25% and 50% thresholds."
     )
     if inc_12h < 0.25 <= inc_24h:
@@ -557,11 +658,11 @@ def add_section3_survival(doc: Document) -> None:
     # ---- 3.4 Log-rank: by instrument and direction ----
     _heading(doc, "3.4  Loss timing by instrument and trade direction", level=2)
     _add_figure(doc, "fig_km_by_symbol.png",
-        "Figure 10. KM loss-free survival by top trading instruments. Lower curves indicate "
+        "Figure 11. KM loss-free survival by top trading instruments. Lower curves indicate "
         "faster accumulation of loss-closes."
     )
     _add_figure(doc, "fig_km_by_type.png",
-        "Figure 11. KM loss-free survival: Buy vs Sell trades."
+        "Figure 12. KM loss-free survival: Buy vs Sell trades."
     )
 
     sym_p_str  = "p < 0.001" if lr_sym["p_value"]  < 0.001 else f"p = {lr_sym['p_value']:.4f}"
@@ -574,7 +675,7 @@ def add_section3_survival(doc: Document) -> None:
         "These results show that the overall KM curve is an average over heterogeneous "
         "sub-populations: some instruments and trade directions accumulate loss-closes "
         "materially faster than others. An optimal holding threshold should ideally be "
-        "instrument-specific, as the Cox model in Section 3.5 confirms."
+        "instrument-specific, as the Cox model in Section 3.7 confirms."
     )
 
     # Load conditional loss probability table
@@ -588,7 +689,7 @@ def add_section3_survival(doc: Document) -> None:
     # ---- 3.5 Hazard curve — closing-rate artifact ----
     _heading(doc, "3.5  Hazard curve: the closing-rate artifact", level=2)
     _add_figure(doc, "fig_hazard_curve.png",
-        "Figure 12. Smoothed Nelson-Aalen hazard of loss-close vs holding duration (0–168h). "
+        "Figure 13. Smoothed Nelson-Aalen hazard of loss-close vs holding duration (0–168h). "
         "The early peak at ~1.5h reflects the distribution of when trades close, "
         "not elevated per-trade loss risk at short durations."
     )
@@ -618,7 +719,7 @@ def add_section3_survival(doc: Document) -> None:
     # ---- 3.6 Conditional loss probability and cut-point ----
     _heading(doc, "3.6  Conditional loss probability: per-trade risk and cut-point", level=2)
     _add_figure(doc, "fig_conditional_loss_prob.png",
-        "Figure 13. P(loss | closed ≈ t hours) vs holding duration (log x-axis). "
+        "Figure 14. P(loss | closed ≈ t hours) vs holding duration (log x-axis). "
         "Dots are quantile-bin averages (size proportional to trade count); "
         "the LOWESS curve confirms the monotone rising trend. "
         "Dashed lines mark the 30%, 40%, and 50% loss-probability thresholds."
@@ -724,7 +825,7 @@ def add_section3_survival(doc: Document) -> None:
                       fmt={"HR": "{:.3f}", "HR_lower_95": "{:.3f}",
                            "HR_upper_95": "{:.3f}", "p_value": "{:.4f}"})
     _add_figure(doc, "fig_cox_forest.png",
-        "Figure 14. Forest plot of Cox hazard ratios with 95% CI. "
+        "Figure 15. Forest plot of Cox hazard ratios with 95% CI. "
         "HR > 1 (red) raises loss risk; HR < 1 (green) is protective. "
         "Log scale on x-axis."
     )
@@ -755,7 +856,7 @@ def add_section3_survival(doc: Document) -> None:
     # ---- 3.8 Competing risks (was 3.7) ----
     _heading(doc, "3.8  Competing-risks validation (Aalen-Johansen)", level=2)
     _add_figure(doc, "fig_aalen_johansen.png",
-        "Figure 15. Aalen-Johansen competing-risks cumulative incidence functions: "
+        "Figure 16. Aalen-Johansen competing-risks cumulative incidence functions: "
         "loss-close (solid red) and profit-close (solid green), with the cause-specific "
         "1 - KM estimate overlaid (dashed red) for comparison."
     )
@@ -877,13 +978,13 @@ def add_section4_modeling(doc: Document) -> None:
         _body(doc, "[model_comparison.csv not found — run generate_modeling_figures.py first]")
 
     _add_figure(doc, "fig_roc_comparison.png",
-        "Figure 16. ROC curves for all four entry-time classifiers on the held-out test set. "
+        "Figure 17. ROC curves for all four entry-time classifiers on the held-out test set. "
         "All models produce modest AUC, consistent with the hypothesis that entry-time "
         "information carries limited predictive signal for the eventual loss outcome."
     )
 
     _add_figure(doc, "fig_pr_comparison.png",
-        "Figure 17. Precision-Recall curves. The dashed baseline reflects the ~27% "
+        "Figure 18. Precision-Recall curves. The dashed baseline reflects the ~27% "
         "unconditional loss rate (no-skill classifier). PR-AUC is more informative than "
         "ROC-AUC under class imbalance because it penalises false positives against "
         "the minority (loss) class."
@@ -893,7 +994,7 @@ def add_section4_modeling(doc: Document) -> None:
     _heading(doc, "4.3  Calibration and confusion matrix", level=2)
 
     _add_figure(doc, "fig_calibration.png",
-        f"Figure 18. Calibration curve for the best model ({best_name}). "
+        f"Figure 19. Calibration curve for the best model ({best_name}). "
         "Perfect calibration would follow the diagonal. Deviations indicate that "
         "predicted probabilities over- or under-estimate actual loss rates at that "
         "confidence level."
@@ -907,7 +1008,7 @@ def add_section4_modeling(doc: Document) -> None:
     )
 
     _add_figure(doc, "fig_confusion_best.png",
-        f"Figure 19. Confusion matrix for {best_name} at the 0.5 decision threshold. "
+        f"Figure 20. Confusion matrix for {best_name} at the 0.5 decision threshold. "
         "Given the modest AUC, many losses are predicted as profits (false negatives) "
         "and vice versa — underscoring that entry features alone are insufficient to "
         "reliably filter individual losing trades."
@@ -956,7 +1057,7 @@ def add_section4_modeling(doc: Document) -> None:
         _body(doc, "[leakage_auc.csv not found — run generate_modeling_figures.py first]")
 
     _add_figure(doc, "fig_auc_entry_vs_duration.png",
-        "Figure 20. Entry-only ROC-AUC vs duration-augmented ROC-AUC (LightGBM). "
+        "Figure 21. Entry-only ROC-AUC vs duration-augmented ROC-AUC (LightGBM). "
         "The right bar is not deployable live — holding duration is only known after "
         "the trade closes. The gap represents the information ceiling the survival-based "
         "exit rule captures that an entry classifier cannot."
@@ -976,7 +1077,7 @@ def add_section4_modeling(doc: Document) -> None:
     _heading(doc, "4.5  SHAP feature importance", level=2)
 
     _add_figure(doc, "fig_shap_summary.png",
-        "Figure 21. SHAP beeswarm plot — top 12 features by mean |SHAP| for the best "
+        "Figure 22. SHAP beeswarm plot — top 12 features by mean |SHAP| for the best "
         "entry-time model. Each dot is one test-set observation; colour encodes feature "
         "value (red = high, blue = low). Features are ranked by mean absolute SHAP value."
     )
@@ -1126,11 +1227,13 @@ def add_section5_recommendations(doc: Document) -> None:
 
     _heading(doc, "Threshold 2 — Hard limit: 5 days (120 hours)", level=3)
     _body(doc,
-        "By approximately 5 days (120 hours), two independent signals converge: "
-        "(1) conditional loss probability exceeds 50% — the statistical majority of "
-        "trades held this long close at a loss; "
-        "(2) median trade profit turns negative (-0.99 in the 5–7 day bin, -1.94 "
-        "beyond 7 days from the descriptive analysis in Section 2.3). "
+        "At 5 days (120 hours), the conditional loss probability is approximately 48% "
+        "and rising; the 50% majority level is crossed at ~137h (~5.7 days). "
+        "5 days / 120h is chosen as a conservative round anchor just before that "
+        "crossing. Independently, median trade profit turns negative in the 5–7 day "
+        "bin (-0.99) and falls further to -1.94 beyond 7 days (Section 2.3). Two "
+        "independent signals — the survival-derived loss probability approaching "
+        "majority, and negative median profit — converge in the 5–7 day window. "
         "No survival curve, Cox hazard ratio, or descriptive statistic in this report "
         "supports holding beyond this point. "
         "Operational rule: implement a hard maximum holding duration of 5 days (120 "

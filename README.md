@@ -86,7 +86,7 @@ The analysis is built in three layers, from descriptive to inferential to predic
 ├── scripts/           # report generation and pipeline entry points
 ├── src/               # data loading, preprocessing, analysis, modeling modules
 ├── tests/             # pytest unit tests
-├── Statistical_Report.docx   # full written report
+├── Statistical_Report.pdf   # full written report
 ├── requirements.txt
 └── pytest.ini
 ```
@@ -109,5 +109,5 @@ pytest                             # run the test suite
 ## Report
 
 The full analysis, figures, tables, and recommendations are in
-**`Statistical_Report.docx`**, structured results-first: executive summary and exit
+**`Statistical_Report.pdf`**, structured results-first: executive summary and exit
 recommendation up front, supporting analysis after.

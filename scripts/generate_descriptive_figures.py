@@ -16,7 +16,11 @@ import pandas as pd
 import seaborn as sns
 
 from src.descriptive import duration_summary, spearman_duration_profit, save_summaries
-from src.plot_style import apply_style, ACCENT, BIN_PALETTE, SAVEFIG_KW, LOSS_COLOR
+from src.plot_style import apply_style, ACCENT, BIN_PALETTE, SAVEFIG_KW, LOSS_COLOR, PROFIT_COLOR
+from src.seasonality import save_seasonality_tables
+
+MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 FIGURES = Path("figures")
 PROCESSED = Path("data/processed")
@@ -96,11 +100,12 @@ def fig_duration_profit_hexbin(df: pd.DataFrame) -> None:
     hb = ax.hexbin(
         df["log_holding"],
         df["Profit"].clip(lower=p1, upper=p99),
-        gridsize=60,
+        gridsize=40,
+        bins="log",
         cmap="crest",
         mincnt=1,
     )
-    cb = fig.colorbar(hb, ax=ax, label="Trade count")
+    cb = fig.colorbar(hb, ax=ax, label="Trade count (log scale)")
     ax.axhline(0, color="grey", linestyle="--", linewidth=1, alpha=0.8)
     p_str = f"p < 0.001" if p < 0.001 else f"p = {p:.4f}"
     ax.annotate(
@@ -159,22 +164,39 @@ def fig_lossprob_days(df: pd.DataFrame) -> None:
 # ---------------------------------------------------------------------------
 
 def _profit_boxplot(df: pd.DataFrame, bin_col: str, title: str, fname: str) -> None:
-    p5, p95 = df["Profit"].quantile(0.05), df["Profit"].quantile(0.95)
-    plot_df = df[(df["Profit"] >= p5) & (df["Profit"] <= p95)]
-
+    p5, p95   = df["Profit"].quantile(0.05), df["Profit"].quantile(0.95)
+    plot_df   = df[(df["Profit"] >= p5) & (df["Profit"] <= p95)]
     bin_order = plot_df[bin_col].cat.categories.tolist()
-    palette = {b: c for b, c in zip(bin_order, BIN_PALETTE)}
+    palette   = {b: c for b, c in zip(bin_order, BIN_PALETTE)}
 
-    fig, ax = plt.subplots(figsize=(9, 4))
+    # Compute whisker extents per bin for y-axis zoom
+    all_lo, all_hi = [], []
+    for b in bin_order:
+        grp = plot_df.loc[plot_df[bin_col] == b, "Profit"]
+        if len(grp) < 4:
+            continue
+        q1, q3 = grp.quantile(0.25), grp.quantile(0.75)
+        iqr    = q3 - q1
+        all_lo.append(max(float(grp.min()), q1 - 1.5 * iqr))
+        all_hi.append(min(float(grp.max()), q3 + 1.5 * iqr))
+
+    fig, ax = plt.subplots(figsize=(11, 6))
     sns.boxplot(
         data=plot_df, x=bin_col, y="Profit", order=bin_order,
         hue=bin_col, hue_order=bin_order, palette=palette,
-        showfliers=False, legend=False, ax=ax,
+        showfliers=False, width=0.6, legend=False, ax=ax,
         medianprops=dict(color="white", linewidth=2),
     )
     ax.axhline(0, color="grey", linestyle="--", linewidth=1, alpha=0.8)
+
+    if all_lo and all_hi:
+        y_lo, y_hi = min(all_lo), max(all_hi)
+        margin     = (y_hi - y_lo) * 0.15
+        ax.set_ylim(y_lo - margin, y_hi + margin)
+        print(f"    {fname}: y-limits [{y_lo - margin:.2f}, {y_hi + margin:.2f}]")
+
     ax.set_xlabel("Duration bin")
-    ax.set_ylabel("Profit (5–95th pct)")
+    ax.set_ylabel("Profit (5–95th pct, zoomed to whisker region)")
     ax.set_title(title)
     plt.tight_layout()
     fig.savefig(FIGURES / fname, **SAVEFIG_KW)
@@ -196,37 +218,156 @@ def fig_profit_box_days(df: pd.DataFrame) -> None:
 
 def fig_metrics_by_hours(df: pd.DataFrame) -> None:
     s = duration_summary(df, "duration_bin_hours")
-    bins = s["bin"].astype(str).tolist()
-    colors = BIN_PALETTE[: len(bins)]
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    # Shortest bin at top → longest at bottom; reverse so top = index 0 in barh
+    s = s.iloc[::-1].reset_index(drop=True)
+    bins   = s["bin"].astype(str).tolist()
+    colors = list(reversed(BIN_PALETTE[: len(bins)]))
+    y      = range(len(bins))
+
+    fig, axes = plt.subplots(1, 3, figsize=(14, max(3.5, len(bins) * 0.55)),
+                             sharey=True)
+
+    def _annotate_h(ax, values, fmt):
+        for i, v in enumerate(values):
+            sign   = 1 if v >= 0 else -1
+            offset = sign * abs(ax.get_xlim()[1] - ax.get_xlim()[0]) * 0.01
+            ha     = "left" if v >= 0 else "right"
+            ax.text(v + offset, i, fmt(v), va="center", ha=ha, fontsize=8)
 
     # Panel 1 — loss probability
-    axes[0].bar(bins, s["loss_probability"] * 100, color=colors)
-    axes[0].set_title("Loss Probability (%)")
-    axes[0].set_xlabel("Duration bin")
-    axes[0].yaxis.set_major_formatter(mticker.PercentFormatter())
-    axes[0].tick_params(axis="x", rotation=30)
+    vals0 = (s["loss_probability"] * 100).tolist()
+    axes[0].barh(y, vals0, color=colors)
+    axes[0].xaxis.set_major_formatter(mticker.PercentFormatter())
+    axes[0].set_title("Loss Probability", fontsize=11)
+    axes[0].set_xlabel("%")
+    axes[0].set_yticks(list(y))
+    axes[0].set_yticklabels(bins)
+    axes[0].invert_yaxis()           # shortest bin at top
+    axes[0].set_xlim(0, max(vals0) * 1.18)
+    _annotate_h(axes[0], vals0, lambda v: f"{v:.1f}%")
 
-    # Panel 2 — avg profit
-    axes[1].bar(bins, s["avg_profit"], color=colors)
-    axes[1].axhline(0, color="grey", linestyle="--", linewidth=1)
-    axes[1].set_title("Average Profit")
-    axes[1].set_xlabel("Duration bin")
-    axes[1].tick_params(axis="x", rotation=30)
+    # Panel 2 — average profit
+    vals1 = s["avg_profit"].tolist()
+    axes[1].barh(y, vals1, color=colors)
+    axes[1].axvline(0, color="grey", linestyle="--", linewidth=1)
+    axes[1].set_title("Average Profit", fontsize=11)
+    axes[1].set_xlabel("Profit")
+    axes[1].tick_params(axis="y", left=False, labelleft=False)
+    span1  = max(abs(min(vals1)), abs(max(vals1)))
+    axes[1].set_xlim(-span1 * 1.30, span1 * 1.30)
+    _annotate_h(axes[1], vals1, lambda v: f"{v:,.0f}")
 
     # Panel 3 — median profit
-    axes[2].bar(bins, s["median_profit"], color=colors)
-    axes[2].axhline(0, color="grey", linestyle="--", linewidth=1)
-    axes[2].set_title("Median Profit")
-    axes[2].set_xlabel("Duration bin")
-    axes[2].tick_params(axis="x", rotation=30)
+    vals2 = s["median_profit"].tolist()
+    axes[2].barh(y, vals2, color=colors)
+    axes[2].axvline(0, color="grey", linestyle="--", linewidth=1)
+    axes[2].set_title("Median Profit", fontsize=11)
+    axes[2].set_xlabel("Profit")
+    axes[2].tick_params(axis="y", left=False, labelleft=False)
+    span2  = max(abs(min(vals2)), abs(max(vals2)))
+    axes[2].set_xlim(-span2 * 1.30, span2 * 1.30)
+    _annotate_h(axes[2], vals2, lambda v: f"{v:,.2f}")
 
-    fig.suptitle("Trade Metrics by Holding Duration (hour bins)", fontsize=14, y=1.02)
+    fig.suptitle("Trade Metrics by Holding Duration (hour bins)", fontsize=13, y=1.01)
     plt.tight_layout()
     fig.savefig(FIGURES / "fig_metrics_by_hours.png", **SAVEFIG_KW)
     plt.close(fig)
     print("  saved fig_metrics_by_hours.png")
+
+
+# ---------------------------------------------------------------------------
+# Fig 9 — Loss probability by calendar month
+# ---------------------------------------------------------------------------
+
+def fig_loss_by_month(df: pd.DataFrame) -> None:
+    from src.seasonality import loss_rate_by_month
+    month_df = loss_rate_by_month(df)
+    base_rate = float(df["is_loss"].mean())
+
+    months = month_df["month"].tolist()
+    rates  = (month_df["loss_rate"] * 100).tolist()
+    labels = [MONTH_LABELS[m - 1] for m in months]
+    colors = [LOSS_COLOR if r > base_rate * 100 else ACCENT for r in rates]
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    bars = ax.bar(labels, rates, color=colors, edgecolor="white", linewidth=0.4)
+    ax.axhline(base_rate * 100, color="grey", linestyle="--", linewidth=1.5,
+               label=f"Overall base rate ({base_rate:.1%})")
+    for bar, r in zip(bars, rates):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
+                f"{r:.1f}%", ha="center", va="bottom", fontsize=8)
+    ax.set_xlabel("Entry month")
+    ax.set_ylabel("Loss probability (%)")
+    ax.set_title("Loss Probability by Calendar Month")
+    ax.yaxis.set_major_formatter(mticker.PercentFormatter())
+    ax.legend(fontsize=9)
+    plt.tight_layout()
+    fig.savefig(FIGURES / "fig_loss_by_month.png", **SAVEFIG_KW)
+    plt.close(fig)
+    print("  saved fig_loss_by_month.png")
+
+
+# ---------------------------------------------------------------------------
+# Fig 10 — Loss probability by entry hour of day
+# ---------------------------------------------------------------------------
+
+def fig_loss_by_hour(df: pd.DataFrame) -> None:
+    from src.seasonality import loss_rate_by_hour
+    hour_df = loss_rate_by_hour(df)
+    base_rate = float(df["is_loss"].mean())
+
+    hours  = hour_df["hour"].tolist()
+    rates  = (hour_df["loss_rate"] * 100).tolist()
+    colors = [LOSS_COLOR if r > base_rate * 100 else ACCENT for r in rates]
+
+    fig, ax = plt.subplots(figsize=(12, 4))
+    ax.bar(hours, rates, color=colors, edgecolor="white", linewidth=0.4)
+    ax.axhline(base_rate * 100, color="grey", linestyle="--", linewidth=1.5,
+               label=f"Overall base rate ({base_rate:.1%})")
+    ax.set_xlabel("Entry hour of day (server time)")
+    ax.set_ylabel("Loss probability (%)")
+    ax.set_title("Loss Probability by Entry Hour of Day")
+    ax.yaxis.set_major_formatter(mticker.PercentFormatter())
+    ax.set_xticks(hours)
+    ax.legend(fontsize=9)
+    plt.tight_layout()
+    fig.savefig(FIGURES / "fig_loss_by_hour.png", **SAVEFIG_KW)
+    plt.close(fig)
+    print("  saved fig_loss_by_hour.png")
+
+
+# ---------------------------------------------------------------------------
+# Fig 11 — Monthly Sharpe proxy
+# ---------------------------------------------------------------------------
+
+def fig_monthly_sharpe(df: pd.DataFrame) -> None:
+    from src.seasonality import monthly_sharpe
+    sharpe_df = monthly_sharpe(df)
+
+    months = sharpe_df["month"].tolist()
+    values = sharpe_df["sharpe_proxy"].tolist()
+    labels = [MONTH_LABELS[m - 1] for m in months]
+    colors = [PROFIT_COLOR if v > 0 else LOSS_COLOR for v in values]
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    bars = ax.bar(labels, values, color=colors, edgecolor="white", linewidth=0.4)
+    ax.axhline(0, color="grey", linestyle="--", linewidth=1)
+    for bar, v in zip(bars, values):
+        offset = 0.002 if v >= 0 else -0.002
+        va = "bottom" if v >= 0 else "top"
+        ax.text(bar.get_x() + bar.get_width() / 2, v + offset,
+                f"{v:.3f}", ha="center", va=va, fontsize=8)
+    ax.set_xlabel("Calendar month")
+    ax.set_ylabel("Sharpe proxy (mean / std of per-trade profit)")
+    ax.set_title(
+        "Monthly Sharpe Proxy\n"
+        "(mean / std of raw per-trade profit — not annualised)"
+    )
+    plt.tight_layout()
+    fig.savefig(FIGURES / "fig_monthly_sharpe.png", **SAVEFIG_KW)
+    plt.close(fig)
+    print("  saved fig_monthly_sharpe.png")
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +381,7 @@ if __name__ == "__main__":
 
     print("Computing summaries and saving CSVs…")
     hours_df, days_df, stats_df = save_summaries(df)
+    month_df, hour_df, sharpe_df = save_seasonality_tables(df)
 
     print("Generating figures…")
     fig_dist_duration(df)
@@ -250,6 +392,7 @@ if __name__ == "__main__":
     fig_profit_box_hours(df)
     fig_profit_box_days(df)
     fig_metrics_by_hours(df)
+    fig_monthly_sharpe(df)
 
     print("\nHours summary:")
     print(hours_df.to_string(index=False))

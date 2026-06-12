@@ -22,3 +22,6 @@ __pycache__/
 # Virtual environments
 venv/
 .venv/
+
+# Word intermediates — only the PDF is committed
+*.docx
